@@ -1,14 +1,18 @@
 ---
-title: 'Bagged Topic models: Simulation 1'
+title: 'Variable selection in classtpx: bagging model'
 author: "Kushal K Dey"
 date: "March 6, 2016"
-output: html_document
+output: 
+  html_document:
+    css: floating-toc.css
+    toc: true
 ---
 
 ## Overview
 
-The main problem we address using `varselectpx` is variable selection in topic models. From 
 We want a faster way of doing classification using topic models. Usually there are lots of genes/ features in the dataset but only a handful of them drive the classification. Our aim would be to choose variables judiciously and also fit the `classtpx` models for small batches of variables at a time, build an ensemble and then average over the results to get the final output.
+
+## Simulation Set up
 
 ```{r echo=TRUE, eval=TRUE}
 n.out <- 1000
@@ -35,10 +39,15 @@ counts <- t( do.call(cbind,
                             function(x) 
                                 rmultinom(1,1000,prob=omega_sim[x,]%*%freq))))
 dim(counts)
+```
 
+## classtpx model fit
+
+We apply `classtpx` model on the counts data with the first 100 genes in one cluster and the genes from 1000 to 1100 in another cluster. 
+
+```{r echo=TRUE, eval=TRUE}
 library(classtpx)
 known_indices <- c(1:100,1001:1100);
-
 omega_known <- omega_sim[known_indices,]
 system.time(Topic_clus <- classtpx::class_topics(
     counts, 
@@ -46,8 +55,11 @@ system.time(Topic_clus <- classtpx::class_topics(
     known_indices = known_indices, 
     omega_known = omega_known, 
     tol=0.001))
-
 ```
+
+### Structure plot of classtpx model
+
+We plot the Structure plot of the omega matrix.
 
 ```{r echo=TRUE, eval=TRUE}
 # These are estimated gene relative expression
@@ -85,6 +97,8 @@ barplot(t(docweights),
 
 ## Bagged topic models
 
+We form $20$ batches of $50$ genes each and then for each batch, we fit the topic model in parallel.
+
 ```{r echo=TRUE, eval=TRUE}
 
 num <- 50
@@ -102,12 +116,14 @@ system.time(bag_topics <- parallel::mclapply(1:20, function(l)
 
 ```
 
+We build strength measures for the clusters. 
+
 ```{r echo=TRUE, eval=TRUE}
-barplot(t(bag_topics[[10]]$omega),
-        col = 2:(K+1),
-        axisnames = F, space = 0, border = NA, 
-        main=paste("No. of clusters=", K),
-        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+#barplot(t(bag_topics[[10]]$omega),
+#        col = 2:(K+1),
+#        axisnames = F, space = 0, border = NA, 
+#        main=paste("No. of clusters=", K),
+#        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
 
 #CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_sim[-known_indices,])$cor.information_content
 
@@ -136,7 +152,9 @@ bag_strength_list <- sapply(1:20, function(l)
 
 ```
 
-We take the first and the last entries and define the reduced counts matrix.
+### Filtered counts + Structure plot of bagged model
+
+We just pool the batches with high values of cluster information and perform topic model and plot the omega proportion as Structure plot. 
 
 ```{r echo=TRUE, eval=TRUE}
 counts_test <- counts[,c(1:50,950:1000)];
@@ -148,17 +166,13 @@ barplot(t(baggedTopic_clus$omega),
         axisnames = F, space = 0, border = NA, 
         main=paste("No. of clusters=", K),
         las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+```
 
-Topic_clus <- classtpx::class_topics(counts,                                                                       K=2,
-                                      known_indices=known_indices,                                                  omega_known = omega_known,                                                    tol=0.1);
+### Additional filtering genes bagged model
 
+We further take a smaller subset of genes (assuming we had performed the gene level strength). Here we just assume the first 10 and the last 10 genes.
 
-barplot(t(Topic_clus$omega),
-        col = 2:(K+1),
-        axisnames = F, space = 0, border = NA, 
-        main=paste("No. of clusters=", K),
-        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
-
+```{r echo=TRUE, eval=TRUE}
 counts_test_2 <- counts[,c(1:10,990:1000)];
 baggedTopic_clus_2 <- classtpx::class_topics(counts_test_2,                                                                   K=2,
                                                  known_indices=known_indices,                                                  omega_known = omega_known,                                                    tol=0.1);
@@ -169,4 +183,8 @@ barplot(t(baggedTopic_clus_2$omega),
         las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
 
 ```
+
+## Conclusion
+
+We show that the `classtpx` model without variable selection does not perform as well as the one with variable selection despite not considering the gene level strengths. When we consider gene level strengths, the performance improves further.This shows why it is essential to use variable selection in classification topic models.
 
