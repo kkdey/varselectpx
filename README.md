@@ -5,7 +5,7 @@ A R package + gh-pages on variable selection in topic models
 
 From the application of `maptpx` or `classtpx` models for unsupervised or semi-supervised topic model fitting to RNA-sequencing or other count data, we have observed that the computation time is usually pretty high especially when there are lots of features. This is a pretty commonplace issue in topic modeling on genetic data, because usually the features would either be transcripts/ genes / exons or even microsatellites and would usually vary from tens of thousands (genes) to around half a million (SNPs/ microsatellites).
 
-As an instance, the `maptpx` model takes 3297 minutes to fit the topic model with $15$ clusters on the GTEx V6 data (n=8,555, p=16,069) at tolerance $0.1$. The model took $996$ minutes to run on the just on the GTEx brain samples (n=1,259, p=16,069) at same tolerance.
+As an instance, the `maptpx` model takes 3297 minutes to fit the topic model with 15 clusters on the GTEx V6 data (n=8,555, p=16,069) at tolerance 0.1. The model took 996 minutes to run on the just on the GTEx brain samples (n=1,259, p=16,069) at same tolerance.
 
 It must be noted that most of these genes are not relevant to the clustering and do not drive the clusters. Also under the general topic model, apart from the Dirichlet probablity constraint, the genes are considered independent. 
 
