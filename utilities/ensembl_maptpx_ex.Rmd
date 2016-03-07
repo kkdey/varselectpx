@@ -1,0 +1,185 @@
+---
+title: 'Variable selection in maptpx: bagging model'
+author: "Kushal K Dey"
+date: "March 6, 2016"
+output: 
+  html_document:
+    css: floating-toc.css
+    toc: true
+---
+## Overview
+
+We want a faster way of fitting topic models in unsupervised way using `maptpx`. Usually there are lots of genes/ features in the dataset but only a handful of them drive the classification. Our aim would be to choose variables judiciously and also fit the `maptpx` models for small batches of variables at a time, build an ensemble and then assemble the reuslts from the individual fits to make informed decision as to which variables to keep.
+
+## Simulation Set up
+
+```{r echo=TRUE, eval=TRUE}
+rm(list=ls())
+n.out <- 1000
+omega_sim <- rbind( cbind( rep(1, n.out), rep(0, n.out)), 
+                    cbind( rep(0, n.out), rep(1, n.out)),
+                    cbind( seq(0.6, 0.4, length.out = n.out), 
+                           1- seq(0.6, 0.4,length.out=n.out)) )
+dim(omega_sim)
+
+K <- dim(omega_sim)[2]
+barplot(t(omega_sim), 
+        col = 2:(K+1),
+        axisnames = F, space = 0, 
+        border = NA, 
+        main=paste("No. of clusters=", K),
+        las=1, ylim = c(0,1), cex.axis=1.5,cex.main=1.4)
+
+freq <- rbind( c(0.1, 0.2, rep(0.70/998, 998)),
+               c(rep(0.70/500,500), 0.2, rep(0.7/498,498), 0.1) )
+str(freq)
+
+counts <- t( do.call(cbind,
+                     lapply(1:dim(omega_sim)[1], 
+                            function(x) 
+                                rmultinom(1,1000,prob=omega_sim[x,]%*%freq))))
+dim(counts)
+
+```
+
+## maptpx model fit
+
+We employ the `maptpx` model on all the genes.
+
+```{r echo=TRUE, eval=TRUE}
+library(maptpx)
+system.time(Topic_clus <- maptpx::topics(
+    counts, 
+    K, 
+    tol=0.1))
+
+```
+
+### Structure plot of maptpx model
+
+The Structure plot of the `maptpx` topic model fit.
+
+```{r echo=TRUE, eval=TRUE}
+K <- 2
+barplot(t(Topic_clus$omega),
+        col = 2:(K+1),
+        axisnames = F, space = 0, border = NA, 
+        main=paste("No. of clusters=", K),
+        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+```
+
+### maptpx on null genes
+
+We apply `maptpx` model on a set of non-important genes.
+
+```{r echo=TRUE, eval=TRUE}
+Topic_clus_null <- maptpx::topics(
+      counts[,700:850],
+      K,
+      tol=0.1
+)
+
+```
+
+### Structure plot maptpx with null genes
+
+```{r echo=TRUE, eval=TRUE}
+K <- 2
+barplot(t(Topic_clus_null$omega),
+        col = 2:(K+1),
+        axisnames = F, space = 0, border = NA, 
+        main=paste("No. of clusters=", K),
+        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+```
+
+## Bagging/ Batching for variable selection
+
+We form $20$ batches of $50$ genes each and then for each batch, we fit the topic model in parallel.
+
+```{r echo=TRUE, eval=TRUE}
+
+num_batch <- 50
+system.time(bag_topics <- parallel::mclapply(1:20, function(l)
+                           {
+                                counts_temp <- counts[,((l-1)*num_batch+1):(l*num_batch)];
+                                index <- which(rowSums(counts_temp)==0);
+                                if(length(index)!=0){
+                                  counts_temp[index,]=1;
+                                }
+                                out <- maptpx::topics(counts_temp,                                                                   K=2,
+                                                     tol=0.1);
+                                return(out)
+                           }))
+
+```
+
+```{r echo=TRUE, eval=TRUE}
+rep.row<-function(x,n){
+   matrix(rep(x,each=n),nrow=n)
+}
+rep.col<-function(x,n){
+   matrix(rep(x,each=n), ncol=n, byrow=TRUE)
+}
+
+
+omega_null <- rep.row(rep(1/K,K),dim(counts)[1])
+
+#null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_null[-known_indices,])$kl.dist)
+#bag_strength <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+
+bag_strength_list <- unlist(lapply(1:20, function(l)
+                                  {
+                                             suppressWarnings(null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[l]]$omega,omega_null)$kl.dist))
+                                              bag_strength_2 <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+                                              KL_score <- lapply(1:dim(bag_topics[[l]]$theta)[2], function(n) {
+    out <- t(apply(bag_topics[[l]]$theta, 1, function(x){
+      y=x[n] *log(x[n]/x) + x - x[n];
+      return(y)
+    }));
+    return(out)
+  })
+                                            gene_strength <- apply(do.call(cbind, lapply(1:K, function(k)
+                          {
+                                temp_mat <- KL_score[[k]][,-k];
+                                vec <- apply(as.matrix(temp_mat), 1, function(x) max(x))
+                          })),1, function(x) return(1-exp(-max(x))));
+
+                                          bag_strength_genes <- (1-bag_strength_2)*as.vector(gene_strength);
+                                            
+                                      return(bag_strength_genes)
+
+                                  }))
+
+
+```
+
+## Variable selection topic model
+
+```{r echo=TRUE, eval=TRUE}
+
+plot(bag_strength_list, col="red", lwd=1, pch=20, ylim=c(0,1));
+selected_var <- which(bag_strength_list > 0.3);
+print(selected_var)
+Topic_clus_var <- maptpx::topics(
+      counts[,selected_var],
+      K,
+      tol=0.1
+)
+
+```
+
+### Structure plot variable selection topic model
+
+```{r echo=TRUE, eval=TRUE}
+K <- 2
+barplot(t(Topic_clus_var$omega),
+        col = 2:(K+1),
+        axisnames = F, space = 0, border = NA, 
+        main=paste("No. of clusters=", K),
+        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+```
+
+## Conclusion
+
+Note that the variable selection by bagging or batching the variables in the topic model extracts the relevant features or genes which when used produces the same Structure plot as the one over all the genes. The time taken by the original model is smaller than the bagging model but the hope is for larger number of total features, we would be able to make faster conclusions using bagging or batching of topic models.
+
