@@ -107,7 +107,7 @@ omega_null <- rep.row(rep(1/K,K),dim(new_counts)[1])
 #null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_null[-known_indices,])$kl.dist)
 #bag_strength <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
 
-bag_strength_list <- unlist(lapply(1:20, function(l)
+bag_strength_list <- unlist(lapply(1:L, function(l)
                                   {
                                              suppressWarnings(null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[l]]$omega,omega_null)$kl.dist))
                                               bag_strength_2 <- exp(-(max(null_kl_rows)/min(null_kl_rows)));

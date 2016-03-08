@@ -1,0 +1,226 @@
+---
+title: 'ensembl topic model: GTEx V6 Brain Data'
+author: "Kushal K Dey"
+date: "March 8, 2016"
+output: 
+  html_document:
+    css: floating-toc.css
+    toc: true
+---
+
+## Overview
+
+We apply the ensembl topic model on the GTEx V6 Brain data. The standard topic model took $996$ minutes to converge for the brain samples data. The main purpose of this script is to perform this fitting at a much quicker time. The total set of genes are $16,069$ in the GTEx data, out of which only a handful have brain specific activies and are essential for driving the clusters. The variable selection method would enable us to filter out the important genes and then carry out the topic model fit on those filtered genes.
+
+
+## Data processing
+
+```{r echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+library(data.table)
+library(CountClust)
+library(maptpx)
+
+data <- data.frame(fread('../external_data/GTEX_V6/cis_gene_expression.txt'));
+matdata <- data[,-(1:2)];
+samples_id=read.table("../external_data/GTEX_V6/samples_id.txt")[,3];
+
+```
+
+```{r echo=TRUE, eval=TRUE}
+sample_labels <- read.table("../external_data/GTEX_V6/samples_id.txt",
+                            header = TRUE, sep = " ",
+                            stringsAsFactors = FALSE)
+brain_indices <- grep("Brain", sample_labels[,3]);
+brain_data <- t(data[,brain_indices]);
+```
+
+## maptpx model fit
+
+We fit the topic model.
+
+```{r echo=TRUE, eval=FALSE}
+Topic_clus_brain <- topics(t(brain_data), K=4, tol=0.1);
+
+write.table(Topic_clus_brain$omega, "../external_data/GTEX_V6/admix_out_GTEX_V6/omega_cis_genes_brain_2.txt")
+write.table(Topic_clus_brain$theta, "../external_data/GTEX_V6/admix_out_GTEX_V6/theta_cis_genes_brain_2.txt")
+
+```
+
+```{r echo=TRUE, eval=TRUE}
+omega_brain <- read.table("../external_data/GTEX_V6/admix_out_GTEX_V6/omega_cis_genes_brain_2.txt",
+                    header = TRUE, sep = " ",
+                    stringsAsFactors = FALSE)
+dim(omega_brain)
+colnames(omega_brain) <- c(1:NCOL(omega_brain))
+head(omega_brain)
+
+sample_labels <- read.table("../external_data/GTEX_V6/samples_id.txt",
+                            header = TRUE, sep = " ",
+                            stringsAsFactors = FALSE)
+brain_labels <- sample_labels[grep("Brain", sample_labels[,3]), 3]
+
+rownames(omega_brain) <- paste0("X", 1:length(brain_labels))
+annotation <- data.frame(
+    sample_id = paste0("X", 1:length(brain_labels)),
+    tissue_label = factor(brain_labels,
+                          levels = rev(c("Brain - Cerebellar Hemisphere",
+                                     "Brain - Cerebellum",
+                                     "Brain - Spinal cord (cervical c-1)",
+                                     "Brain - Anterior cingulate cortex (BA24)",
+                                     "Brain - Frontal Cortex (BA9)",
+                                     "Brain - Cortex",
+                                     "Brain - Hippocampus",
+                                     "Brain - Substantia nigra",
+                                     "Brain - Amygdala",
+                                     "Brain - Putamen (basal ganglia)",
+                                     "Brain - Caudate (basal ganglia)",
+                                     "Brain - Hypothalamus",
+                                     "Brain - Nucleus accumbens (basal ganglia)") ) ) )
+
+# define colors of the clusers
+cols <- c("blue", "darkgoldenrod1", "cyan", "red")
+```
+
+```{r echo=TRUE, eval=TRUE, fig.height=7, fig.width=5, message=FALSE, warning=FALSE}
+
+StructureGGplot(omega = omega_brain,
+                annotation= annotation,
+                palette = cols,
+                yaxis_label = "",
+                order_sample = TRUE,
+                split_line = list(split_lwd = .4,
+                                  split_col = "white"),
+                axis_tick = list(axis_ticks_length = .1,
+                                 axis_ticks_lwd_y = .1,
+                                 axis_ticks_lwd_x = .1,
+                                 axis_label_size = 8,
+                                 axis_label_face = "bold"))
+```
+
+## Bagging/ Batching genes for variable selection
+
+```{r echo=TRUE, eval=FALSE}
+L <- 200
+chunk <- function(x,n) split(x, factor(sort(rank(x)%%n)))
+chunk_set <- chunk(1:dim(brain_data)[2],L);
+
+system.time(bag_topics <- parallel::mclapply(1:L, function(l)
+                  {
+                                counts_temp <- brain_data[,chunk_set[[l]]];
+                                index <- which(rowSums(counts_temp)==0);
+                                if(length(index)!=0){
+                                  counts_temp[index,]=1;
+                                }
+                                out <- maptpx::topics(counts_temp,                                                                   K=4,
+                                                     tol=0.1);
+                                return(out)
+                           }))
+
+saveRDS(bag_topics, "../rdas/bag_topics_gtex_brain_v6.rda")
+
+```
+
+```{r echo=TRUE, eval=TRUE}
+bag_topics <- readRDS("../rdas/bag_topics_gtex_brain_v6.rda");
+
+rep.row<-function(x,n){
+   matrix(rep(x,each=n),nrow=n)
+}
+rep.col<-function(x,n){
+   matrix(rep(x,each=n), ncol=n, byrow=TRUE)
+}
+
+K <- 4
+L <- length(bag_topics)
+
+omega_null <- rep.row(rep(1/K,K),dim(brain_data)[1])
+
+#null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_null[-known_indices,])$kl.dist)
+#bag_strength <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+
+bag_strength_list <- unlist(lapply(1:L, function(l)
+                                  {
+                                             suppressWarnings(null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[l]]$omega,omega_null)$kl.dist))
+                                              bag_strength_2 <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+                                              KL_score <- lapply(1:dim(bag_topics[[l]]$theta)[2], function(n) {
+    out <- t(apply(bag_topics[[l]]$theta, 1, function(x){
+      y=x[n] *log(x[n]/x) + x - x[n];
+      return(y)
+    }));
+    return(out)
+  })
+                                            gene_strength <- apply(do.call(cbind, lapply(1:K, function(k)
+                          {
+                                temp_mat <- KL_score[[k]][,-k];
+                                vec <- apply(as.matrix(temp_mat), 1, function(x) max(x))
+                          })),1, function(x) return(1-exp(-max(x))));
+
+                                          bag_strength_genes <- (1-bag_strength_2)*as.vector(gene_strength);
+                                            
+                                      return(bag_strength_genes)
+
+                                  }))
+
+plot(bag_strength_list, col=20, lwd=1, pch=20)
+
+
+```
+
+## Varibale selection and topic modeling (K=4)
+
+### Selection threshold 0.1
+
+```{r echo=TRUE, eval=FALSE}
+indices <- which(bag_strength_list > 0.1);
+library(maptpx)
+system.time(Topic_clus_brain_var <- topics(brain_data[,indices], K=4,tol=0.1));
+saveRDS(Topic_clus_brain_var, "../rdas/varselect_topics_gtex_brain_v6_thresh_0_1.rda")
+```
+
+```{r echo=TRUE, eval=TRUE,fig.height=7, fig.width=5, message=FALSE, warning=FALSE}
+Topic_clus_brain_var <- readRDS("../rdas/varselect_topics_gtex_brain_v6_thresh_0_1.rda")
+StructureGGplot(omega = Topic_clus_brain_var$omega,
+                annotation= annotation,
+                palette = cols,
+                yaxis_label = "",
+                order_sample = TRUE,
+                split_line = list(split_lwd = .4,
+                                  split_col = "white"),
+                axis_tick = list(axis_ticks_length = .1,
+                                 axis_ticks_lwd_y = .1,
+                                 axis_ticks_lwd_x = .1,
+                                 axis_label_size = 8,
+                                 axis_label_face = "bold"))
+```
+
+### Selection threshold 0.03
+
+```{r echo=TRUE, eval=FALSE}
+indices <- which(bag_strength_list > 0.03);
+library(maptpx)
+system.time(Topic_clus_brain_var <- topics(brain_data[,indices], K=4,tol=0.1));
+saveRDS(Topic_clus_brain_var, "../rdas/varselect_topics_gtex_brain_v6_thresh_0_03.rda")
+```
+
+```{r echo=TRUE, eval=TRUE,fig.height=7, fig.width=5, message=FALSE, warning=FALSE}
+Topic_clus_brain_var <- readRDS("../rdas/varselect_topics_gtex_brain_v6_thresh_0_03.rda")
+StructureGGplot(omega = Topic_clus_brain_var$omega,
+                annotation= annotation,
+                palette = cols,
+                yaxis_label = "",
+                order_sample = TRUE,
+                split_line = list(split_lwd = .4,
+                                  split_col = "white"),
+                axis_tick = list(axis_ticks_length = .1,
+                                 axis_ticks_lwd_y = .1,
+                                 axis_ticks_lwd_x = .1,
+                                 axis_label_size = 8,
+                                 axis_label_face = "bold"))
+```
+
+
+## Conclusion
+
+The varselectpx model at threshold $0.1$ seems to miss out on some important genes as a result of which one cluster is minimally represented and it is not able to separate out the cortex from the subcortex of the brain that well. However the performance at threshold $0.03$ is way better. 
+The other big plus is the total time taken to compute this was $108.9$ minutes, which is way faster than the $996$ minutes run time for the full data model to converge.
+
