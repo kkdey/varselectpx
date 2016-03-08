@@ -1,0 +1,243 @@
+---
+title: 'ensemble topic model: classtpx Buettner 2015'
+author: "Kushal K Dey"
+date: "March 7, 2016"
+output: 
+  html_document:
+    css: floating-toc.css
+    toc: true
+---
+
+## Overview
+
+When `classtpx` was used on the combined single cell RNA-seq FACS sorted data due to [Buettner et al 2015](http://www.nature.com/nbt/journal/v33/n2/full/nbt.3102.html). There are $96$ cells of each type G1, S and G2M obtained by FACS sorting. We assume $48$ cells as training data for the three classes G1,S and G2M. We then perform ensembl topic model on the `classtpx` model using these $48$ cells from each phase as training data. 
+
+```{r echo=TRUE, eval=TRUE}
+rm(list=ls())
+library(data.table)
+library(maptpx)
+library(classtpx)
+library(CountClust)
+```
+
+## Buettner et al 2015 data 
+
+```{r echo=TRUE, eval=TRUE}
+G1_single <- data.frame(fread('../external_data/Marioni_data/G1_singlecells_counts.txt'), row.names=1);
+G2M_single <- data.frame(fread('../external_data/Marioni_data/G2M_singlecells_counts.txt'), row.names=1);
+S_single <- data.frame(fread('../external_data/Marioni_data/S_singlecells_counts.txt'), row.names=1);
+
+cell_phases <- c(rep("G1", 96), rep("S", 96), rep("G2M", 96))
+```
+
+We filter out ERCC spike ins.
+
+```{r echo=TRUE, eval=TRUE}
+ercc_start <- grep("ERCC", rownames(G1_single))[1]
+G1_single <- G1_single[-(ercc_start:dim(G1_single)[1]),-(1:3)];
+G2M_single <- G2M_single[-(ercc_start:dim(G2M_single)[1]),-(1:3)];
+S_single <- S_single[-(ercc_start:dim(S_single)[1]),-(1:3)];
+pooled_data <- t(cbind(G1_single, S_single, G2M_single));
+```
+
+## maptpx Modeling
+
+```{r echo=TRUE, eval=FALSE}
+Topic_clus <- maptpx::topics(pooled_data, K=3, tol=0.01);
+saveRDS(Topic_clus, "../rdas/botstein_topic_fit.rda")
+```
+
+```{r echo=TRUE, eval=TRUE}
+Topic_clus <- readRDS("../rdas/botstein_topic_fit.rda")
+
+samp_metadata <- cbind.data.frame(c(rep("G1", 96), rep("S", 96), rep("G2", 96)));
+colnames(samp_metadata) <- c("cycle_phase");
+
+if(!dir.exists("../figures/buettner_structure/")) dir.create("../figures/buettner_structure/")
+
+if(!dir.exists("../figures/buettner_structure/maptpx/")) dir.create("../figures/buettner_structure/maptpx/")
+
+library(CountClust)
+obj <- StructureObj_omega(Topic_clus$omega, samp_metadata = samp_metadata, batch_lab = NULL,partition = rep("TRUE",dim(samp_metadata)[2]),path_struct="../figures/buettner_structure/maptpx/",control=list(cex.axis=1));
+```
+
+<img src='../figures/buettner_structure/maptpx/clus_3/struct_clus_3_cycle_phase.png' style="width:450px;height:500px;">
+
+## Manufacturing bulk data
+
+We now pool the first 48 cells in each of the three phases and sum the read counts across up over the cells for each gene to make them represent bulk-RNA FACS sorted data. We keep the remaining 48 cells in each phase as it is as single cells on which we shall test the `classtpx`.
+
+```{r echo=TRUE, eval=TRUE}
+
+G1.bulk <- rowSums(G1_single[,1:48])
+G1_single_half <- G1_single[,-(1:48)];
+G2M.bulk <- rowSums(G2M_single[,1:48])
+G2M_single_half <- G2M_single[,-(1:48)];
+S.bulk <- rowSums(S_single[,1:48])
+S_single_half <- S_single[,-(1:48)];
+
+bulk_data <- cbind(G1.bulk, S.bulk, G2M.bulk);
+sc_data <- cbind(G1_single_half, G2M_single_half, S_single_half);
+
+pooled_data <- t(cbind(bulk_data, sc_data));
+
+```
+
+## classtpx Modeling
+
+Fitting classtpx. We assume that we have done the bulk-RNA FACS sorting and we do not know about the cell cycle phases of the single phases. We use this information to drive the `classtpx`.
+
+```{r echo=TRUE, eval=FALSE}
+library(classtpx)
+K <- 3;
+known_indices <- 1:3;
+omega_known <- rbind(c(1,0,0), c(0,1,0), c(0,0,1));
+Topic_clus <- classtpx::class_topics(pooled_data, K, known_indices = known_indices, omega_known = omega_known, tol=0.1);
+
+saveRDS(Topic_clus, "../rdas/botstein_topic_fit_classtpx.rda")
+```
+
+```{r echo=TRUE, eval=TRUE}
+Topic_clus <- readRDS("../rdas/botstein_topic_fit_classtpx.rda")
+
+samp_metadata <- cbind.data.frame(c(rep("G1", 48), rep("S", 48), rep("G2", 48)));
+colnames(samp_metadata) <- c("cycle_phase");
+
+if(!dir.exists("../figures/buettner_structure/")) dir.create("../figures/buettner_structure/")
+
+if(!dir.exists("../figures/buettner_structure/classtpx/")) dir.create("../figures/buettner_structure/classtpx/")
+
+library(CountClust)
+obj <- StructureObj_omega(Topic_clus$omega[-(1:3),], samp_metadata = samp_metadata, batch_lab = NULL,partition = rep("TRUE",dim(samp_metadata)[2]),path_struct="../figures/buettner_structure/classtpx/",control=list(cex.axis=1));
+```
+
+<img src='../figures/buettner_structure/classtpx/clus_3/struct_clus_3_cycle_phase.png' style="width:450px;height:500px;">
+
+## Bagging/Batching variable selection
+
+We use $300$ batches of data, equally splitamong the features.  
+
+```{r echo=TRUE, eval=TRUE}
+
+L <- 300
+chunk <- function(x,n) split(x, factor(sort(rank(x)%%n)))
+chunk_set <- chunk(1:dim(pooled_data)[2],L);
+
+omega_known <- rbind(c(1,0,0), c(0,1,0), c(0,0,1));
+known_indices <- 1:3;
+
+system.time(bag_topics <- parallel::mclapply(1:L, function(l)
+                           {
+                                counts_temp <- pooled_data[,chunk_set[[l]]];
+                                index <- which(rowSums(counts_temp)==0);
+                                if(length(index)!=0){
+                                  counts_temp[index,]=1;
+                                }
+                                out <- classtpx::class_topics(counts_temp,                                                                   K=3,
+                                                 known_indices=known_indices,                                                       omega_known = omega_known,                                                          tol=0.1);
+                                return(out)
+                           }))
+
+```
+
+We build strength measures for the clusters. 
+
+```{r echo=TRUE, eval=TRUE}
+#barplot(t(bag_topics[[10]]$omega),
+#        col = 2:(K+1),
+#        axisnames = F, space = 0, border = NA, 
+#        main=paste("No. of clusters=", K),
+#        las=1, ylim=c(0,1), cex.axis=1.5, cex.main=1.4)
+
+#CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_sim[-known_indices,])$cor.information_content
+
+rep.row<-function(x,n){
+   matrix(rep(x,each=n),nrow=n)
+}
+rep.col<-function(x,n){
+   matrix(rep(x,each=n), ncol=n, byrow=TRUE)
+}
+
+K <- 3
+omega_null <- rep.row(rep(1/K,K),dim(pooled_data)[1])
+omega_known <- rbind(c(1,0,0), c(0,1,0), c(0,0,1));
+omega_true <- rbind(omega_known, rep.row(omega_known[1,],48),
+                    rep.row(omega_known[2,],48), rep.row(omega_known[3,],48));
+
+#null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[1]]$omega[-known_indices,],omega_null[-known_indices,])$kl.dist)
+#bag_strength <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+
+bag_strength_list <- unlist(lapply(1:L, function(l)
+                                  {
+                                             bag_strength_1 <- CountClust::compare_omega(bag_topics[[l]]$omega,omega_true)$kl.information_content 
+                                             suppressWarnings(null_kl_rows <- rowSums(CountClust::compare_omega(bag_topics[[l]]$omega,omega_null)$kl.dist))
+                                              bag_strength_2 <- exp(-(max(null_kl_rows)/min(null_kl_rows)));
+                                              KL_score <- lapply(1:dim(bag_topics[[l]]$theta)[2], function(n) {
+    out <- t(apply(bag_topics[[l]]$theta, 1, function(x){
+      y=x[n] *log(x[n]/x) + x - x[n];
+      return(y)
+    }));
+    return(out)
+  })
+                                            gene_strength <- apply(do.call(cbind, lapply(1:K, function(k)
+                          {
+                                temp_mat <- KL_score[[k]][,-k];
+                                vec <- apply(as.matrix(temp_mat), 1, function(x) max(x))
+                          })),1, function(x) return(1-exp(-max(x))));
+
+                                          bag_strength_genes <- max((1-bag_strength_2), bag_strength_1)*as.vector(gene_strength);
+                                            
+                                              return(bag_strength_genes)
+
+                                  }))
+
+par(mfrow=c(1,1))
+plot(bag_strength_list, col=20, lwd=1, pch=20, ylim=c(0,1))
+
+
+```
+
+## Varibale selection and topic modeling 
+
+### Selection threshold 0.03
+
+```{r echo=TRUE, eval=TRUE}
+indices <- which(bag_strength_list > 0.03);
+library(maptpx)
+pooled_data_1 <- pooled_data[,indices];
+zero_libsize_rows <- which(rowSums(pooled_data_1)==0);
+pooled_data_1[zero_libsize_rows,]=1;
+system.time(Topic_clus <- classtpx::class_topics(pooled_data_1, K=3,
+                                                 known_indices=known_indices,                                                       omega_known = omega_known,                                                          tol=0.1));
+
+if(!dir.exists("../figures/buettner_structure/classtpx_varselect_thresh_0_03/")) dir.create("../figures/buettner_structure/classtpx_varselect_thresh_0_03/")
+
+obj <- StructureObj_omega(Topic_clus$omega[-(1:3),], samp_metadata = samp_metadata, batch_lab = NULL,partition = rep("TRUE",dim(samp_metadata)[2]),path_struct="../figures/buettner_structure/classtpx_varselect_thresh_0_03/",control=list(cex.axis=1));
+```
+
+<img src='../figures/buettner_structure/classtpx_varselect_thresh_0_03/clus_3/struct_clus_3_cycle_phase.png' style="width:450px;height:500px;">
+
+### Selection threshold 0.1
+
+```{r echo=TRUE, eval=TRUE}
+indices <- which(bag_strength_list > 0.1);
+library(maptpx)
+pooled_data_2 <- pooled_data[,indices];
+zero_libsize_rows <- which(rowSums(pooled_data_1)==0);
+pooled_data_2[zero_libsize_rows,]=1;
+system.time(Topic_clus <- classtpx::class_topics(pooled_data_2, K=3,
+                                                 known_indices=known_indices,                                                       omega_known = omega_known,                                                          tol=0.1));
+
+if(!dir.exists("../figures/buettner_structure/classtpx_varselect_thresh_0_1/")) dir.create("../figures/buettner_structure/classtpx_varselect_thresh_0_1/")
+
+obj <- StructureObj_omega(Topic_clus$omega, samp_metadata = samp_metadata, batch_lab = NULL,partition = rep("TRUE",dim(samp_metadata)[2]),path_struct="../figures/buettner_structure/classtpx_varselect_thresh_0_1/",control=list(cex.axis=1));
+```
+
+<img src='../figures/buettner_structure/classtpx_varselect_thresh_0_1/clus_3/struct_clus_3_cycle_phase.png' style="width:450px;height:500px;">
+
+## Conclusion
+
+Note that the performance of the ensemble method is very good at the threshold level $0.03$ but not so good at $0.1$. This essentially shows the necessity of fixing a good threshold so that we do not lose out on information. We emphasize the use of multiple thresholds and then moving up and comparing each step by `omega_compare()` function of the `CountClust` package and then stopping when it does not change much.
+
+The other important consideration is how to pick suitable batch size. In this case, we picked the batch size to be $300$ but that was ad-hoc. We would want to employ a more adaptive scheme to fix the batch size. 
+
